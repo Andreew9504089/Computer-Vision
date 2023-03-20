@@ -3,9 +3,11 @@ import numpy as np
 import pandas as pd
 import open3d as o3d
 import matplotlib.pyplot as plt
-from scipy.sparse import csr_matrix, coo_matrix
+from scipy.sparse import csr_matrix, coo_matrix, diags
 import scipy
 from scipy.integrate import dblquad
+from math import acos
+import random
 
 image_row = 120
 image_col = 120
@@ -15,6 +17,7 @@ def mask_visualization(M):
     mask = np.copy(np.reshape(M, (image_row, image_col)))
     plt.figure()
     plt.imshow(mask, cmap='gray')
+    plt.imsave('result/venus_m_1000.png', mask, cmap='gray')
     plt.title('Mask')
 
 # visualizing the unit normal vector in RGB color space
@@ -24,17 +27,20 @@ def normal_visualization(N):
     N_map = np.copy(np.reshape(N, (image_row, image_col, 3)))
     # Rescale to [0,1] float number
     N_map = (N_map + 1.0) / 2.0
+    
     plt.figure()
     plt.imshow(N_map)
+    plt.imsave('result/venus_n_1000.png', N_map)
     plt.title('Normal map')
 
 # visualizing the depth on 2D image
 # D is the depth map which contains "only the z value" of all pixels (size : "image width" * "image height")
 def depth_visualization(D):
     D_map = np.copy(np.reshape(D, (image_row,image_col)))
-    # D = np.uint8(D)
+
     plt.figure()
     plt.imshow(D_map)
+    plt.imsave('result/venus_d_1000.png', D_map)
     plt.colorbar(label='Distance to Camera')
     plt.title('Depth map')
     plt.xlabel('X Pixel')
@@ -72,17 +78,42 @@ def read_bmp(filepath):
     image_row , image_col = image.shape
     return image
 
-def ComputeNormalMap(img_src, light_src):
+def ComputeNormalMap(img_src, light_src, test = None, num_iter = 1000):
     KdN = np.linalg.inv(np.transpose(light_src)@light_src)@np.transpose(light_src)@img_src
     N = np.transpose(KdN)
     for row in range(N.shape[0]):
-        N[row] /= (np.linalg.norm(N[row]) + 0.0001)
-    
+        if np.linalg.norm(N[row]) != 0:
+            N[row] /= (np.linalg.norm(N[row]))
+        else:
+            N[row] = [0., 0., 0.]
+
+    if test == 'venus':
+        for i in range(num_iter):
+            # converting the array shape to (w*h) * 3 , every row is a normal vetor of one pixel
+            N_map = np.copy(np.reshape(N, (image_row, image_col, 3)))
+            # Rescale to [0,1] float number
+            tmp = (N_map + 1.0) / 2.0 * 255.0
+            edges = cv2.Canny(np.uint8(tmp), 400, 400)
+            loc = np.where(edges != 0)
+            loc = np.dstack((loc[0], loc[1]))
+
+            plt.figure(0)
+            plt.imshow(edges)
+            plt.imsave('result/venus_e_1000.png', edges)
+            plt.title('Canny edge')
+
+            for p in loc[0]:
+                if p[0] > 0 and p[0] < image_row-1 and p[1] > 0 and p[1] < image_col-1:
+                    N_map[p[0], p[1]] = 0.25*(N_map[p[0]-1, p[1]] + N_map[p[0]+1, p[1]] + N_map[p[0], p[1]-1] + 
+                                        N_map[p[0], p[1]+1])
+
+            N = np.reshape(N_map, N.shape)
+
     return N
 
 def ComputeDepthMap(normal_map, mask):
     normal_map = np.copy(np.reshape(normal_map, (image_row, image_col, 3)))
-    [Y, X] = np.where(mask > 0)
+    [Y, X] = np.where(mask != 0)
     coord = np.dstack((Y,X))[0]
     S = len(coord)
     M = np.zeros((2*S,S))
@@ -147,9 +178,14 @@ def ComputeDepthMap(normal_map, mask):
                 tmp = idx_map[y,x-1]
                 M[idx, tmp] = 1
                 V[idx] = n[0]/n[2]
-            
+
     M = csr_matrix(M)
     Z = scipy.sparse.linalg.lsqr(M,V)[0]
+
+    D = []
+    for d in Z:
+        if d > 0:
+            D.append(d)
 
     z = np.zeros((image_row,image_col))
 
@@ -167,10 +203,9 @@ def CreateMask(normal_map):
 
 if __name__ == '__main__':
     
-    names = ['bunny', 'star', 'venus']
+    names = ['venus']
     for name in names:
-        print(name)
-        save_path = 'result'+name+'_result.ply'
+        save_path = 'result/'+name+'_1000.ply'
         bmps = None
         lights = None
 
@@ -192,7 +227,7 @@ if __name__ == '__main__':
                 bmps = np.vstack([bmps, np.reshape(read_bmp('test/'+name+'/pic'+str(i+1)+'.bmp'), -1)])
 
 
-        N = ComputeNormalMap(bmps, lights)
+        N = ComputeNormalMap(bmps, lights, name)
         normal_visualization(N)
 
         M = CreateMask(N)
@@ -201,8 +236,8 @@ if __name__ == '__main__':
         Z = ComputeDepthMap(N, M)
         depth_visualization(Z)
 
-        # save_ply(Z,save_path)
-        # show_ply(save_path)
+        save_ply(Z,save_path)
+        show_ply(save_path)
 
     # showing the windows of all visualization function
     plt.show()
